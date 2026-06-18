@@ -7,6 +7,8 @@ step execution, lightweight replanning, and final answer synthesis.
 ## Current Features
 
 - Generates a structured execution plan for a user task.
+- Composes raw user input into a structured task profile.
+- Extracts the goal, task type, constraints, success criteria, and assumptions.
 - Stores each run in an explicit `AgentState`.
 - Tracks the task, plan, execution results, replan count, and trace events.
 - Executes each plan step with access to prior step history.
@@ -18,7 +20,7 @@ step execution, lightweight replanning, and final answer synthesis.
 
 1. Clean baseline implementation. Done.
 2. Structured agent state and execution trace. Done.
-3. Task composition with goals, constraints, and success criteria.
+3. Task composition with goals, constraints, and success criteria. Done.
 4. Critic and reflexion loop for self-correction.
 5. Working memory for multi-step reasoning.
 6. Search-based reasoning over multiple candidate plans.

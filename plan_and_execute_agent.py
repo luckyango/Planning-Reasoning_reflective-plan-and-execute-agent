@@ -18,11 +18,36 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_string_list(value: Any) -> list[str]:
+    """Convert model-provided list-like values into clean strings."""
+
+    if not isinstance(value, list):
+        return []
+
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 @dataclass
 class Task:
-    """The user task that anchors an agent run."""
+    """A structured task profile that anchors an agent run."""
 
+    original_input: str
     goal: str
+    task_type: str
+    constraints: list[str] = field(default_factory=list)
+    success_criteria: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw_task: dict[str, Any], original_input: str) -> "Task":
+        return cls(
+            original_input=original_input,
+            goal=str(raw_task.get("goal", original_input)).strip(),
+            task_type=str(raw_task.get("task_type", "general")).strip(),
+            constraints=normalize_string_list(raw_task.get("constraints", [])),
+            success_criteria=normalize_string_list(raw_task.get("success_criteria", [])),
+            assumptions=normalize_string_list(raw_task.get("assumptions", [])),
+        )
 
 
 @dataclass
@@ -112,6 +137,70 @@ class AgentState:
         ]
 
 
+class TaskComposer:
+    """Convert raw user input into a structured task profile."""
+
+    def __init__(self, client: OpenAI, model: str) -> None:
+        self.client = client
+        self.model = model
+
+    def compose(self, user_input: str) -> Task:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""You are a task composition engine for a planning agent.
+
+Convert the user request into a structured task profile.
+
+User request:
+{user_input}
+
+Classify task_type as one of:
+- research
+- analysis
+- decision
+- coding
+- planning
+- writing
+- general
+
+Requirements:
+1. Preserve the user's core goal.
+2. Extract explicit constraints from the request.
+3. Infer only practical success criteria that are needed to judge completion.
+4. List assumptions only when the request leaves important details unspecified.
+5. Do not solve the task yet.
+
+Return only a JSON object with this shape:
+{{
+  "goal": "Clear goal statement",
+  "task_type": "research",
+  "constraints": ["Constraint"],
+  "success_criteria": ["Criterion"],
+  "assumptions": ["Assumption"]
+}}""",
+                }
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("The task composer returned an empty response.")
+
+        try:
+            raw_task = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"The task composer returned invalid JSON: {content}") from exc
+
+        if not isinstance(raw_task, dict):
+            raise ValueError("The task composer response must be a JSON object.")
+
+        return Task.from_dict(raw_task, original_input=user_input)
+
+
 class PlanAndExecuteAgent:
     """A baseline plan-and-execute agent with simple replanning."""
 
@@ -126,14 +215,28 @@ class PlanAndExecuteAgent:
         self.critic_model = critic_model
         self.max_replans = max_replans
         self.client = client or OpenAI()
+        self.task_composer = TaskComposer(client=self.client, model=self.model)
         self.last_state: AgentState | None = None
 
     def run(self, task: str) -> str:
         """Run the plan-execute-replan loop for a task."""
 
-        state = AgentState(task=Task(goal=task))
+        composed_task = self.task_composer.compose(task)
+        state = AgentState(task=composed_task)
         self.last_state = state
-        state.add_trace("run_started", "Agent run started.", {"task": task})
+        state.add_trace(
+            "task_composed",
+            "User input composed into a structured task profile.",
+            {
+                "original_input": composed_task.original_input,
+                "goal": composed_task.goal,
+                "task_type": composed_task.task_type,
+                "constraints": composed_task.constraints,
+                "success_criteria": composed_task.success_criteria,
+                "assumptions": composed_task.assumptions,
+            },
+        )
+        state.add_trace("run_started", "Agent run started.", {"task": composed_task.goal})
 
         state.plan = self._plan(state.task)
         state.add_trace(
@@ -217,16 +320,17 @@ class PlanAndExecuteAgent:
                     "role": "user",
                     "content": f"""You are an expert task planner.
 
-Create a detailed execution plan for the task below.
+Create a detailed execution plan for the structured task profile below.
 
-Task:
-{task.goal}
+{self._format_task_profile(task)}
 
 Requirements:
 1. Break the task into 3 to 8 executable steps.
 2. Each step must specify what to do, what tool or method to use, and the expected output.
-3. Make dependencies between steps clear.
-4. Do not execute any step. Only create the plan.
+3. Use the success criteria to decide what evidence or outputs are needed.
+4. Respect the constraints and assumptions.
+5. Make dependencies between steps clear.
+6. Do not execute any step. Only create the plan.
 
 Return only a JSON object with this shape:
 {{
@@ -269,6 +373,9 @@ Tool or method:
 Expected output:
 {step.expected_output}
 
+Task profile:
+{self._format_task_profile(state.task)}
+
 Completed steps:
 {history_text or "No steps have been completed yet."}
 
@@ -298,8 +405,8 @@ Return the execution result directly.""",
                     "role": "user",
                     "content": f"""Decide whether the latest execution result seriously diverges from the expected output.
 
-Original task:
-{state.task.goal}
+Task profile:
+{self._format_task_profile(state.task)}
 
 Step objective:
 {last_record.step.description}
@@ -343,8 +450,8 @@ Return only YES or NO.""",
                     "role": "user",
                     "content": f"""Replan the remaining work based on the execution history.
 
-Original task:
-{state.task.goal}
+Task profile:
+{self._format_task_profile(state.task)}
 
 Completed steps:
 {history_text}
@@ -386,8 +493,8 @@ Return only a JSON object with this shape:
                     "role": "user",
                     "content": f"""Answer the original task based on the execution results.
 
-Original task:
-{state.task.goal}
+Task profile:
+{self._format_task_profile(state.task)}
 
 Execution results:
 {history_text}
@@ -448,6 +555,22 @@ Provide a complete, structured final answer.""",
                 f"Result: {result_preview}"
             )
         return "\n\n".join(lines)
+
+    def _format_task_profile(self, task: Task) -> str:
+        """Format a structured task profile for model prompts."""
+
+        return json.dumps(
+            {
+                "original_input": task.original_input,
+                "goal": task.goal,
+                "task_type": task.task_type,
+                "constraints": task.constraints,
+                "success_criteria": task.success_criteria,
+                "assumptions": task.assumptions,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _print_plan(
         self,
