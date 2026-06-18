@@ -77,12 +77,40 @@ Print the trace analysis as JSON:
 python analyze_trace.py runs/trace.json --json
 ```
 
+Compare agent variants with built-in sample traces:
+
+```powershell
+python eval_demo.py --use-samples
+```
+
+Compare saved traces:
+
+```powershell
+python eval_demo.py baseline=runs/baseline.json reflective=runs/reflective.json search_memory=runs/search_memory.json
+```
+
 ## Architecture Direction
 
 This project is intended to evolve into a reflective planning and reasoning
 agent. The target architecture includes task composition, explicit working
 memory, critic-agent feedback, reflection-agent self-correction, and
 search-based reasoning over multiple candidate solution paths.
+
+## Project Structure
+
+```text
+agent/
+  __init__.py
+  core.py
+analyze_trace.py
+demo.py
+eval_demo.py
+plan_and_execute_agent.py
+tests/
+```
+
+`agent/core.py` contains the main agent architecture. `plan_and_execute_agent.py`
+is kept as a compatibility entry point for older imports.
 
 ## Architecture
 
@@ -127,6 +155,19 @@ Use `--trace-out` to save the full `AgentState` as JSON for inspection.
 - Average critic scores for quality, goal alignment, and evidence strength.
 - Critic issues, reflection lessons, and working-memory counts.
 - Whether a final answer was produced.
+
+## Evaluation Demo
+
+`eval_demo.py` compares multiple reasoning traces as agent variants. It uses a
+lightweight local evaluation harness with explicit `EvaluationCase`,
+`EvaluationMetric`, and `EvaluationResult` structures, so the project can later
+integrate external eval frameworks without changing the trace format.
+
+The built-in sample traces compare:
+
+- `baseline`: simple plan-and-execute behavior.
+- `reflective`: critic and reflection loop behavior.
+- `search_memory`: search-based planning with working memory.
 
 ## Project Positioning
 
