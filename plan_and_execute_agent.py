@@ -157,6 +157,107 @@ class Reflection:
 
 
 @dataclass
+class MemoryItem:
+    """A single working-memory entry created during a run."""
+
+    category: str
+    content: str
+    source_step_id: int | None = None
+    importance: float = 0.5
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class WorkingMemory:
+    """Explicit working memory for multi-step reasoning."""
+
+    observations: list[MemoryItem] = field(default_factory=list)
+    decisions: list[MemoryItem] = field(default_factory=list)
+    failed_attempts: list[MemoryItem] = field(default_factory=list)
+    lessons: list[MemoryItem] = field(default_factory=list)
+
+    def add_observation(
+        self,
+        content: str,
+        source_step_id: int | None = None,
+        importance: float = 0.5,
+    ) -> None:
+        self.observations.append(
+            MemoryItem(
+                category="observation",
+                content=content,
+                source_step_id=source_step_id,
+                importance=importance,
+            )
+        )
+
+    def add_decision(
+        self,
+        content: str,
+        source_step_id: int | None = None,
+        importance: float = 0.5,
+    ) -> None:
+        self.decisions.append(
+            MemoryItem(
+                category="decision",
+                content=content,
+                source_step_id=source_step_id,
+                importance=importance,
+            )
+        )
+
+    def add_failed_attempt(
+        self,
+        content: str,
+        source_step_id: int | None = None,
+        importance: float = 0.8,
+    ) -> None:
+        self.failed_attempts.append(
+            MemoryItem(
+                category="failed_attempt",
+                content=content,
+                source_step_id=source_step_id,
+                importance=importance,
+            )
+        )
+
+    def add_lesson(
+        self,
+        content: str,
+        source_step_id: int | None = None,
+        importance: float = 0.8,
+    ) -> None:
+        self.lessons.append(
+            MemoryItem(
+                category="lesson",
+                content=content,
+                source_step_id=source_step_id,
+                importance=importance,
+            )
+        )
+
+    def to_dict(self) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "observations": self._items_to_dict(self.observations),
+            "decisions": self._items_to_dict(self.decisions),
+            "failed_attempts": self._items_to_dict(self.failed_attempts),
+            "lessons": self._items_to_dict(self.lessons),
+        }
+
+    def _items_to_dict(self, items: list[MemoryItem]) -> list[dict[str, Any]]:
+        return [
+            {
+                "category": item.category,
+                "content": item.content,
+                "source_step_id": item.source_step_id,
+                "importance": item.importance,
+                "created_at": item.created_at,
+            }
+            for item in items
+        ]
+
+
+@dataclass
 class TraceEvent:
     """A structured event emitted during an agent run."""
 
@@ -175,6 +276,7 @@ class AgentState:
     executed_steps: list[ExecutionResult] = field(default_factory=list)
     critiques: list[Critique] = field(default_factory=list)
     reflections: list[Reflection] = field(default_factory=list)
+    working_memory: WorkingMemory = field(default_factory=WorkingMemory)
     trace: list[TraceEvent] = field(default_factory=list)
     replan_count: int = 0
     final_answer: str | None = None
@@ -486,9 +588,18 @@ class PlanAndExecuteAgent:
                 "assumptions": composed_task.assumptions,
             },
         )
+        state.working_memory.add_decision(
+            f"Composed the user request as a {composed_task.task_type} task: "
+            f"{composed_task.goal}",
+            importance=0.9,
+        )
         state.add_trace("run_started", "Agent run started.", {"task": composed_task.goal})
 
-        state.plan = self._plan(state.task)
+        state.plan = self._plan(state)
+        state.working_memory.add_decision(
+            f"Created an initial plan with {len(state.plan)} steps.",
+            importance=0.7,
+        )
         state.add_trace(
             "plan_created",
             "Initial plan created.",
@@ -511,6 +622,11 @@ class PlanAndExecuteAgent:
             result = self._execute_step(step, state)
             execution_result = ExecutionResult(step=step, result=result)
             state.executed_steps.append(execution_result)
+            state.working_memory.add_observation(
+                f"Step {step.id} result: {result[:500]}",
+                source_step_id=step.id,
+                importance=0.6,
+            )
             state.add_trace(
                 "step_completed",
                 "Plan step execution completed.",
@@ -545,6 +661,20 @@ class PlanAndExecuteAgent:
                 critique=critique,
             )
             state.reflections.append(reflection)
+            if critique.issues:
+                state.working_memory.add_failed_attempt(
+                    f"Step {step.id} issues: {'; '.join(critique.issues)}",
+                    source_step_id=step.id,
+                    importance=0.8,
+                )
+            state.working_memory.add_lesson(
+                (
+                    f"Step {step.id} lesson: {reflection.lesson}. "
+                    f"Correction strategy: {reflection.correction_strategy}"
+                ),
+                source_step_id=step.id,
+                importance=0.8,
+            )
             state.add_trace(
                 "critique_completed",
                 "Execution result critique completed.",
@@ -574,6 +704,11 @@ class PlanAndExecuteAgent:
             if critique.should_retry and retry_counts.get(step.id, 0) < 1:
                 retry_counts[step.id] = retry_counts.get(step.id, 0) + 1
                 print(f"\nRetrying step {step.id} based on critic feedback")
+                state.working_memory.add_decision(
+                    f"Retry step {step.id} because the critic recommended retry.",
+                    source_step_id=step.id,
+                    importance=0.9,
+                )
                 state.add_trace(
                     "step_retry_scheduled",
                     "Critic recommended retrying the current step.",
@@ -587,6 +722,14 @@ class PlanAndExecuteAgent:
                 print(f"\nReplanning remaining work ({state.replan_count}/{self.max_replans})")
                 new_remaining_plan = self._replan(state, remaining_steps)
                 state.plan = state.plan[: step_index + 1] + new_remaining_plan
+                state.working_memory.add_decision(
+                    (
+                        f"Replanned remaining work after step {step.id}; "
+                        f"new remaining step count: {len(new_remaining_plan)}."
+                    ),
+                    source_step_id=step.id,
+                    importance=0.9,
+                )
                 state.add_trace(
                     "plan_revised",
                     "Remaining plan revised.",
@@ -607,7 +750,7 @@ class PlanAndExecuteAgent:
         )
         return state.final_answer
 
-    def _plan(self, task: Task) -> list[PlanStep]:
+    def _plan(self, state: AgentState) -> list[PlanStep]:
         """Generate an executable plan for the task."""
 
         response = self.client.chat.completions.create(
@@ -619,7 +762,10 @@ class PlanAndExecuteAgent:
 
 Create a detailed execution plan for the structured task profile below.
 
-{self._format_task_profile(task)}
+{self._format_task_profile(state.task)}
+
+Working memory:
+{self._format_working_memory(state.working_memory)}
 
 Requirements:
 1. Break the task into 3 to 8 executable steps.
@@ -673,6 +819,9 @@ Expected output:
 Task profile:
 {self._format_task_profile(state.task)}
 
+Working memory:
+{self._format_working_memory(state.working_memory)}
+
 Completed steps:
 {history_text or "No steps have been completed yet."}
 
@@ -706,6 +855,9 @@ Return the execution result directly.""",
 
 Task profile:
 {self._format_task_profile(state.task)}
+
+Working memory:
+{self._format_working_memory(state.working_memory)}
 
 Completed steps:
 {history_text}
@@ -750,6 +902,9 @@ Return only a JSON object with this shape:
 
 Task profile:
 {self._format_task_profile(state.task)}
+
+Working memory:
+{self._format_working_memory(state.working_memory)}
 
 Execution results:
 {history_text}
@@ -843,6 +998,16 @@ Provide a complete, structured final answer.""",
                 f"Next action: {reflection.next_action}"
             )
         return "\n\n".join(lines)
+
+    def _format_working_memory(self, working_memory: WorkingMemory) -> str:
+        """Format working memory as compact model context."""
+
+        memory_payload = working_memory.to_dict()
+        has_memory = any(memory_payload.values())
+        if not has_memory:
+            return "No working memory has been recorded yet."
+
+        return json.dumps(memory_payload, ensure_ascii=False, indent=2)
 
     def _print_plan(
         self,
