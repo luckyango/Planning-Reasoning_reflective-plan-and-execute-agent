@@ -16,6 +16,9 @@ step execution, lightweight replanning, and final answer synthesis.
 - Uses a reflection agent to turn critiques into lessons, failure modes, and correction strategies.
 - Maintains explicit working memory for observations, decisions, failed attempts, and lessons.
 - Feeds working memory back into planning, execution, replanning, and synthesis.
+- Generates multiple candidate reasoning paths before execution.
+- Scores candidate paths by goal alignment, feasibility, evidence potential, and risk.
+- Selects the highest-scoring path as the executable plan.
 - Supports retrying a weak step or replanning remaining work based on critic feedback.
 - Replans only the remaining work when execution diverges from expectations.
 - Synthesizes all step results into a final structured answer.
@@ -27,7 +30,7 @@ step execution, lightweight replanning, and final answer synthesis.
 3. Task composition with goals, constraints, and success criteria. Done.
 4. Critic and reflexion loop for self-correction. Done.
 5. Working memory for multi-step reasoning. Done.
-6. Search-based reasoning over multiple candidate plans.
+6. Search-based reasoning over multiple candidate plans. Done.
 7. Product demo with traceable reasoning output.
 
 ## Setup

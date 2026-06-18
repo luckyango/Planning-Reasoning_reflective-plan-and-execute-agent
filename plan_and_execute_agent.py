@@ -97,6 +97,71 @@ class PlanStep:
 
 
 @dataclass
+class PlanEvaluation:
+    """Scores assigned to one candidate reasoning path."""
+
+    goal_alignment_score: float
+    feasibility_score: float
+    evidence_potential_score: float
+    risk_score: float
+    total_score: float
+    strengths: list[str]
+    weaknesses: list[str]
+
+    @classmethod
+    def from_dict(cls, raw_evaluation: dict[str, Any]) -> "PlanEvaluation":
+        goal_alignment_score = clamp_score(raw_evaluation.get("goal_alignment_score", 0.0))
+        feasibility_score = clamp_score(raw_evaluation.get("feasibility_score", 0.0))
+        evidence_potential_score = clamp_score(
+            raw_evaluation.get("evidence_potential_score", 0.0)
+        )
+        risk_score = clamp_score(raw_evaluation.get("risk_score", 1.0))
+        default_total = (
+            goal_alignment_score
+            + feasibility_score
+            + evidence_potential_score
+            + (1.0 - risk_score)
+        ) / 4
+
+        return cls(
+            goal_alignment_score=goal_alignment_score,
+            feasibility_score=feasibility_score,
+            evidence_potential_score=evidence_potential_score,
+            risk_score=risk_score,
+            total_score=clamp_score(raw_evaluation.get("total_score", default_total)),
+            strengths=normalize_string_list(raw_evaluation.get("strengths", [])),
+            weaknesses=normalize_string_list(raw_evaluation.get("weaknesses", [])),
+        )
+
+
+@dataclass
+class ReasoningPath:
+    """A candidate plan produced during search-based reasoning."""
+
+    path_id: str
+    strategy: str
+    rationale: str
+    steps: list[PlanStep]
+    evaluation: PlanEvaluation | None = None
+    selected: bool = False
+
+    @classmethod
+    def from_dict(cls, raw_path: dict[str, Any], fallback_id: int) -> "ReasoningPath":
+        raw_steps = raw_path.get("steps", [])
+        steps = [
+            PlanStep.from_dict(raw_step, fallback_id=index + 1)
+            for index, raw_step in enumerate(raw_steps)
+            if isinstance(raw_step, dict)
+        ]
+        return cls(
+            path_id=str(raw_path.get("path_id", f"path_{fallback_id}")).strip(),
+            strategy=str(raw_path.get("strategy", "")).strip(),
+            rationale=str(raw_path.get("rationale", "")).strip(),
+            steps=steps,
+        )
+
+
+@dataclass
 class ExecutionResult:
     """The result of executing one plan step."""
 
@@ -273,6 +338,8 @@ class AgentState:
 
     task: Task
     plan: list[PlanStep] = field(default_factory=list)
+    candidate_paths: list[ReasoningPath] = field(default_factory=list)
+    selected_path: ReasoningPath | None = None
     executed_steps: list[ExecutionResult] = field(default_factory=list)
     critiques: list[Critique] = field(default_factory=list)
     reflections: list[Reflection] = field(default_factory=list)
@@ -551,6 +618,192 @@ Return only a JSON object with this shape:
         }
 
 
+class PlanSearch:
+    """Generate and evaluate candidate reasoning paths before execution."""
+
+    def __init__(self, client: OpenAI, generator_model: str, evaluator_model: str) -> None:
+        self.client = client
+        self.generator_model = generator_model
+        self.evaluator_model = evaluator_model
+
+    def search(
+        self,
+        task_profile: str,
+        working_memory: str,
+        candidate_count: int,
+    ) -> list[ReasoningPath]:
+        candidate_paths = self._generate_candidate_paths(
+            task_profile=task_profile,
+            working_memory=working_memory,
+            candidate_count=candidate_count,
+        )
+        for path in candidate_paths:
+            path.evaluation = self._evaluate_path(
+                task_profile=task_profile,
+                working_memory=working_memory,
+                path=path,
+            )
+        return sorted(
+            candidate_paths,
+            key=lambda path: path.evaluation.total_score if path.evaluation else 0.0,
+            reverse=True,
+        )
+
+    def _generate_candidate_paths(
+        self,
+        task_profile: str,
+        working_memory: str,
+        candidate_count: int,
+    ) -> list[ReasoningPath]:
+        response = self.client.chat.completions.create(
+            model=self.generator_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""You are a search-based planning agent.
+
+Generate {candidate_count} distinct reasoning paths for the task. Each path should use a different planning strategy.
+
+Task profile:
+{task_profile}
+
+Working memory:
+{working_memory}
+
+Useful strategy examples:
+- evidence-first investigation
+- hypothesis-driven reasoning
+- compare-and-rank analysis
+- risk-first validation
+- decomposition-by-dependencies
+
+Requirements:
+1. Produce genuinely different candidate paths.
+2. Each path must contain 3 to 8 executable steps.
+3. Each step must specify what to do, what tool or method to use, and the expected output.
+4. Do not execute any step. Only create candidate plans.
+
+Return only a JSON object with this shape:
+{{
+  "paths": [
+    {{
+      "path_id": "A",
+      "strategy": "Strategy name",
+      "rationale": "Why this path may work",
+      "steps": [
+        {{
+          "id": 1,
+          "description": "Step description",
+          "tool": "Tool or method",
+          "expected_output": "Expected output",
+          "depends_on": []
+        }}
+      ]
+    }}
+  ]
+}}""",
+                }
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        raw_json = self._parse_json_response(response.choices[0].message.content)
+        raw_paths = raw_json.get("paths", [])
+        if not isinstance(raw_paths, list):
+            raise ValueError("The plan search response must include a 'paths' list.")
+
+        paths = [
+            ReasoningPath.from_dict(raw_path, fallback_id=index + 1)
+            for index, raw_path in enumerate(raw_paths)
+            if isinstance(raw_path, dict)
+        ]
+        valid_paths = [path for path in paths if path.steps]
+        if not valid_paths:
+            raise ValueError("The plan search response did not include any valid paths.")
+
+        return valid_paths
+
+    def _evaluate_path(
+        self,
+        task_profile: str,
+        working_memory: str,
+        path: ReasoningPath,
+    ) -> PlanEvaluation:
+        response = self.client.chat.completions.create(
+            model=self.evaluator_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""You are a plan evaluator for a search-based reasoning agent.
+
+Score the candidate reasoning path before execution.
+
+Task profile:
+{task_profile}
+
+Working memory:
+{working_memory}
+
+Candidate path:
+{json.dumps(self._path_payload(path), ensure_ascii=False, indent=2)}
+
+Scoring guidance:
+- goal_alignment_score: Does this path directly serve the user's goal and success criteria?
+- feasibility_score: Can the steps be executed in a clear sequence?
+- evidence_potential_score: Is the path likely to produce specific, useful evidence?
+- risk_score: How likely is this path to fail, drift, or produce unsupported conclusions?
+- total_score: Overall score from 0.0 to 1.0. Higher is better.
+
+Return only a JSON object with this shape:
+{{
+  "goal_alignment_score": 0.0,
+  "feasibility_score": 0.0,
+  "evidence_potential_score": 0.0,
+  "risk_score": 0.0,
+  "total_score": 0.0,
+  "strengths": ["Strength"],
+  "weaknesses": ["Weakness"]
+}}""",
+                }
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        raw_json = self._parse_json_response(response.choices[0].message.content)
+        return PlanEvaluation.from_dict(raw_json)
+
+    def _path_payload(self, path: ReasoningPath) -> dict[str, Any]:
+        return {
+            "path_id": path.path_id,
+            "strategy": path.strategy,
+            "rationale": path.rationale,
+            "steps": [
+                {
+                    "id": step.id,
+                    "description": step.description,
+                    "tool": step.tool,
+                    "expected_output": step.expected_output,
+                    "depends_on": step.depends_on,
+                }
+                for step in path.steps
+            ],
+        }
+
+    def _parse_json_response(self, content: str | None) -> dict[str, Any]:
+        if not content:
+            raise ValueError("The plan search agent returned an empty response.")
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"The plan search agent returned invalid JSON: {content}") from exc
+
+        if not isinstance(parsed, dict):
+            raise ValueError("The plan search response must be a JSON object.")
+
+        return parsed
+
+
 class PlanAndExecuteAgent:
     """A baseline plan-and-execute agent with simple replanning."""
 
@@ -559,15 +812,22 @@ class PlanAndExecuteAgent:
         model: str = DEFAULT_MODEL,
         critic_model: str = CRITIC_MODEL,
         max_replans: int = 3,
+        candidate_plan_count: int = 3,
         client: OpenAI | None = None,
     ) -> None:
         self.model = model
         self.critic_model = critic_model
         self.max_replans = max_replans
+        self.candidate_plan_count = candidate_plan_count
         self.client = client or OpenAI()
         self.task_composer = TaskComposer(client=self.client, model=self.model)
         self.critic = Critic(client=self.client, model=self.critic_model)
         self.reflector = Reflector(client=self.client, model=self.critic_model)
+        self.plan_search = PlanSearch(
+            client=self.client,
+            generator_model=self.model,
+            evaluator_model=self.critic_model,
+        )
         self.last_state: AgentState | None = None
 
     def run(self, task: str) -> str:
@@ -595,15 +855,20 @@ class PlanAndExecuteAgent:
         )
         state.add_trace("run_started", "Agent run started.", {"task": composed_task.goal})
 
-        state.plan = self._plan(state)
+        state.plan = self._search_plan(state)
         state.working_memory.add_decision(
-            f"Created an initial plan with {len(state.plan)} steps.",
+            f"Selected an initial plan with {len(state.plan)} steps from "
+            f"{len(state.candidate_paths)} candidate reasoning paths.",
             importance=0.7,
         )
         state.add_trace(
             "plan_created",
-            "Initial plan created.",
-            {"step_count": len(state.plan)},
+            "Initial plan selected from candidate reasoning paths.",
+            {
+                "step_count": len(state.plan),
+                "candidate_path_count": len(state.candidate_paths),
+                "selected_path_id": state.selected_path.path_id if state.selected_path else None,
+            },
         )
         self._print_plan("Initial plan", state.plan)
 
@@ -750,6 +1015,46 @@ class PlanAndExecuteAgent:
         )
         return state.final_answer
 
+    def _search_plan(self, state: AgentState) -> list[PlanStep]:
+        """Search over candidate reasoning paths and select the best plan."""
+
+        candidate_paths = self.plan_search.search(
+            task_profile=self._format_task_profile(state.task),
+            working_memory=self._format_working_memory(state.working_memory),
+            candidate_count=self.candidate_plan_count,
+        )
+        state.candidate_paths = candidate_paths
+        selected_path = candidate_paths[0]
+        selected_path.selected = True
+        state.selected_path = selected_path
+
+        state.add_trace(
+            "candidate_paths_evaluated",
+            "Candidate reasoning paths generated and evaluated.",
+            {
+                "paths": [
+                    {
+                        "path_id": path.path_id,
+                        "strategy": path.strategy,
+                        "total_score": (
+                            path.evaluation.total_score if path.evaluation else None
+                        ),
+                        "selected": path.selected,
+                    }
+                    for path in candidate_paths
+                ]
+            },
+        )
+        state.working_memory.add_decision(
+            (
+                f"Selected reasoning path {selected_path.path_id} using strategy "
+                f"'{selected_path.strategy}' with score "
+                f"{selected_path.evaluation.total_score if selected_path.evaluation else 'unknown'}."
+            ),
+            importance=0.9,
+        )
+        return selected_path.steps
+
     def _plan(self, state: AgentState) -> list[PlanStep]:
         """Generate an executable plan for the task."""
 
@@ -892,6 +1197,7 @@ Return only a JSON object with this shape:
 
         history_text = self._format_execution_history(state.executed_steps, max_chars=700)
         reflection_text = self._format_reflections(state.reflections)
+        search_summary = self._format_reasoning_paths(state.candidate_paths)
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -905,6 +1211,9 @@ Task profile:
 
 Working memory:
 {self._format_working_memory(state.working_memory)}
+
+Search-based reasoning summary:
+{search_summary or "No candidate reasoning paths were recorded."}
 
 Execution results:
 {history_text}
@@ -1008,6 +1317,37 @@ Provide a complete, structured final answer.""",
             return "No working memory has been recorded yet."
 
         return json.dumps(memory_payload, ensure_ascii=False, indent=2)
+
+    def _format_reasoning_paths(self, paths: list[ReasoningPath]) -> str:
+        """Format candidate reasoning paths and scores for model context."""
+
+        if not paths:
+            return ""
+
+        payload = []
+        for path in paths:
+            evaluation = path.evaluation
+            payload.append(
+                {
+                    "path_id": path.path_id,
+                    "strategy": path.strategy,
+                    "rationale": path.rationale,
+                    "selected": path.selected,
+                    "total_score": evaluation.total_score if evaluation else None,
+                    "goal_alignment_score": (
+                        evaluation.goal_alignment_score if evaluation else None
+                    ),
+                    "feasibility_score": evaluation.feasibility_score if evaluation else None,
+                    "evidence_potential_score": (
+                        evaluation.evidence_potential_score if evaluation else None
+                    ),
+                    "risk_score": evaluation.risk_score if evaluation else None,
+                    "strengths": evaluation.strengths if evaluation else [],
+                    "weaknesses": evaluation.weaknesses if evaluation else [],
+                }
+            )
+
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     def _print_plan(
         self,
