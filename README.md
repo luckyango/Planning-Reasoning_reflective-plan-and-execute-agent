@@ -1,116 +1,41 @@
 # Reflective Plan-and-Execute Agent
 
-A Python prototype for a reflective plan-and-execute agent architecture. The
-current version focuses on clear task planning, structured run state, traceable
-step execution, lightweight replanning, and final answer synthesis.
+An LLM agent prototype for complex task solving with explicit planning,
+working memory, self-correction, and search-based reasoning.
 
-## Current Features
+This project explores a reflective agent architecture that does more than
+produce a single answer. It composes the user's request into a structured task,
+searches over multiple candidate plans, executes the selected path, critiques
+intermediate results, reflects on failures, updates working memory, and exports
+traceable reasoning state for analysis.
 
-- Generates a structured execution plan for a user task.
-- Composes raw user input into a structured task profile.
-- Extracts the goal, task type, constraints, success criteria, and assumptions.
-- Stores each run in an explicit `AgentState`.
-- Tracks the task, plan, execution results, replan count, and trace events.
-- Executes each plan step with access to prior step history.
-- Uses a critic agent to score execution quality, goal alignment, and evidence strength.
-- Uses a reflection agent to turn critiques into lessons, failure modes, and correction strategies.
-- Maintains explicit working memory for observations, decisions, failed attempts, and lessons.
-- Feeds working memory back into planning, execution, replanning, and synthesis.
-- Generates multiple candidate reasoning paths before execution.
-- Scores candidate paths by goal alignment, feasibility, evidence potential, and risk.
-- Selects the highest-scoring path as the executable plan.
-- Supports retrying a weak step or replanning remaining work based on critic feedback.
-- Replans only the remaining work when execution diverges from expectations.
-- Synthesizes all step results into a final structured answer.
+## Why This Project Exists
 
-## Roadmap
-
-1. Clean baseline implementation. Done.
-2. Structured agent state and execution trace. Done.
-3. Task composition with goals, constraints, and success criteria. Done.
-4. Critic and reflexion loop for self-correction. Done.
-5. Working memory for multi-step reasoning. Done.
-6. Search-based reasoning over multiple candidate plans. Done.
-7. Product demo with traceable reasoning output. Done.
-
-## Setup
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-Set your OpenAI API key:
-
-```powershell
-$env:OPENAI_API_KEY="your-api-key"
-```
-
-Run the demo:
-
-```powershell
-python demo.py
-```
-
-Run with a custom task and save the full trace:
-
-```powershell
-python demo.py --task "Compare LangGraph, CrewAI, and AutoGen for an internal knowledge-base agent." --trace-out runs/trace.json
-```
-
-Run tests:
-
-```powershell
-python -m unittest discover -s tests
-```
-
-Analyze a saved trace:
-
-```powershell
-python analyze_trace.py runs/trace.json
-```
-
-Print the trace analysis as JSON:
-
-```powershell
-python analyze_trace.py runs/trace.json --json
-```
-
-Compare agent variants with built-in sample traces:
-
-```powershell
-python eval_demo.py --use-samples
-```
-
-Compare saved traces:
-
-```powershell
-python eval_demo.py baseline=runs/baseline.json reflective=runs/reflective.json search_memory=runs/search_memory.json
-```
-
-## Architecture Direction
-
-This project is intended to evolve into a reflective planning and reasoning
-agent. The target architecture includes task composition, explicit working
-memory, critic-agent feedback, reflection-agent self-correction, and
-search-based reasoning over multiple candidate solution paths.
-
-## Project Structure
+Most simple agent demos follow a linear loop:
 
 ```text
-agent/
-  __init__.py
-  core.py
-analyze_trace.py
-demo.py
-eval_demo.py
-plan_and_execute_agent.py
-tests/
+prompt -> plan -> execute -> answer
 ```
 
-`agent/core.py` contains the main agent architecture. `plan_and_execute_agent.py`
-is kept as a compatibility entry point for older imports.
+That pattern is easy to build, but it hides the parts that matter for complex
+work: plan quality, error recovery, memory use, and whether the agent can choose
+between competing solution paths. This project makes those mechanisms explicit
+and inspectable.
+
+## Core Capabilities
+
+- Task composition into goal, task type, constraints, success criteria, and assumptions.
+- Multi-path plan search before execution.
+- Candidate path scoring by goal alignment, feasibility, evidence potential, and risk.
+- Plan-and-execute loop with structured `AgentState`.
+- Critic agent for execution quality, goal alignment, and evidence strength.
+- Reflection agent for lessons, failure modes, and correction strategies.
+- Retry and replan control actions based on critic feedback.
+- Explicit working memory for observations, decisions, failed attempts, and lessons.
+- Full trace export for reasoning inspection.
+- Trace analyzer for run-level diagnostics.
+- Evaluation demo for comparing agent variants.
+- Deterministic tests with a fake model client.
 
 ## Architecture
 
@@ -133,45 +58,159 @@ flowchart TD
     Memory --> Synthesizer
 ```
 
-## Demo Output
+## Project Structure
 
-The CLI demo prints:
+```text
+agent/
+  __init__.py
+  core.py
+  memory.py
+  models.py
+  utils.py
+analyze_trace.py
+demo.py
+eval_demo.py
+plan_and_execute_agent.py
+tests/
+```
 
-- The composed task type and goal.
+- `agent/core.py`: agent roles and orchestration loop.
+- `agent/models.py`: task, plan, critique, reflection, path, and state models.
+- `agent/memory.py`: working-memory data structures.
+- `agent/utils.py`: normalization and timestamp helpers.
+- `plan_and_execute_agent.py`: compatibility import entry point.
+- `demo.py`: interactive product demo.
+- `analyze_trace.py`: reasoning trace analyzer.
+- `eval_demo.py`: lightweight evaluation harness for comparing variants.
+- `tests/`: deterministic fake-client tests.
+
+## Setup
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Set your OpenAI API key for live agent runs:
+
+```powershell
+$env:OPENAI_API_KEY="your-api-key"
+```
+
+The tests, trace analyzer, and sample evaluation demo do not require an API key.
+
+## Run The Agent Demo
+
+```powershell
+python demo.py
+```
+
+Run a custom task and export the full reasoning trace:
+
+```powershell
+python demo.py --task "Compare LangGraph, CrewAI, and AutoGen for an internal knowledge-base agent." --trace-out runs/trace.json
+```
+
+The demo prints:
+
+- Composed task type and goal.
 - Candidate reasoning paths with scores.
-- The selected path.
-- Step-level execution quality.
+- Selected path.
+- Step-level critic quality.
 - Working-memory counts.
-- The final answer.
+- Final answer.
 
-Use `--trace-out` to save the full `AgentState` as JSON for inspection.
+## Analyze A Trace
 
-## Trace Analyzer
+```powershell
+python analyze_trace.py runs/trace.json
+```
 
-`analyze_trace.py` converts a saved run trace into a compact reasoning report:
+JSON output is also available:
+
+```powershell
+python analyze_trace.py runs/trace.json --json
+```
+
+The analyzer reports:
 
 - Selected reasoning path and candidate path scores.
 - Executed step count, retry count, and replan count.
-- Average critic scores for quality, goal alignment, and evidence strength.
-- Critic issues, reflection lessons, and working-memory counts.
+- Average critic scores.
+- Critic issues and reflection lessons.
+- Working-memory usage.
 - Whether a final answer was produced.
 
-## Evaluation Demo
+## Compare Agent Variants
 
-`eval_demo.py` compares multiple reasoning traces as agent variants. It uses a
-lightweight local evaluation harness with explicit `EvaluationCase`,
-`EvaluationMetric`, and `EvaluationResult` structures, so the project can later
-integrate external eval frameworks without changing the trace format.
+Run the built-in sample evaluation:
 
-The built-in sample traces compare:
+```powershell
+python eval_demo.py --use-samples
+```
 
-- `baseline`: simple plan-and-execute behavior.
-- `reflective`: critic and reflection loop behavior.
-- `search_memory`: search-based planning with working memory.
+Compare saved traces:
 
-## Project Positioning
+```powershell
+python eval_demo.py baseline=runs/baseline.json reflective=runs/reflective.json search_memory=runs/search_memory.json
+```
 
-Reflective Plan-and-Execute Agent is an LLM agent prototype for complex task
-solving. It combines task composition, explicit working memory, multi-path plan
-search, critic-agent evaluation, reflection-agent self-correction, and traceable
-execution state.
+The evaluation harness uses explicit `EvaluationCase`, `EvaluationMetric`, and
+`EvaluationResult` structures. It is intentionally lightweight so the project
+can later integrate OpenAI Evals, DeepEval, LangSmith, or another evaluation
+framework without changing the trace format.
+
+## Run Tests
+
+```powershell
+python -m unittest discover -s tests
+```
+
+The tests use a fake model client and cover:
+
+- Highest-scoring candidate path selection.
+- Critic-triggered retry behavior.
+- Critic-triggered replanning.
+- Trace analyzer summaries.
+- Evaluation demo ranking and formatting.
+
+## Example Evaluation Output
+
+```text
+Agent Variant Evaluation
+========================
+
+Variants compared: 3
+Best variant: search_memory
+
+Scores:
+- search_memory: overall=0.926
+  paths=3 steps=2 retries=1 replans=1
+  memory_items=8 reflections=3 issues=1
+- reflective: overall=0.736
+  paths=1 steps=2 retries=1 replans=0
+  memory_items=5 reflections=2 issues=1
+- baseline: overall=0.484
+  paths=1 steps=2 retries=0 replans=0
+  memory_items=0 reflections=0 issues=1
+```
+
+## What This Demonstrates
+
+This project demonstrates agent architecture concepts that are often hidden in
+simple chatbot demos:
+
+- How a task can be represented as structured state.
+- How planning can be treated as a search problem.
+- How critic and reflection roles can improve execution.
+- How working memory can shape later reasoning steps.
+- How agent behavior can be traced, analyzed, and evaluated.
+
+## Roadmap
+
+- Add an optional LLM-as-judge evaluator for final answer and trace quality.
+- Add richer task suites for repeatable evaluation.
+- Split agent roles into separate modules if the architecture grows further.
+- Add saved sample traces under `examples/` for portfolio screenshots.
+- Add integration adapters for external tools or web search.
