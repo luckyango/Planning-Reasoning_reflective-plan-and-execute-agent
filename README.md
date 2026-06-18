@@ -31,7 +31,7 @@ step execution, lightweight replanning, and final answer synthesis.
 4. Critic and reflexion loop for self-correction. Done.
 5. Working memory for multi-step reasoning. Done.
 6. Search-based reasoning over multiple candidate plans. Done.
-7. Product demo with traceable reasoning output.
+7. Product demo with traceable reasoning output. Done.
 
 ## Setup
 
@@ -50,7 +50,13 @@ $env:OPENAI_API_KEY="your-api-key"
 Run the demo:
 
 ```powershell
-python plan_and_execute_agent.py
+python demo.py
+```
+
+Run with a custom task and save the full trace:
+
+```powershell
+python demo.py --task "Compare LangGraph, CrewAI, and AutoGen for an internal knowledge-base agent." --trace-out runs/trace.json
 ```
 
 ## Architecture Direction
@@ -59,3 +65,44 @@ This project is intended to evolve into a reflective planning and reasoning
 agent. The target architecture includes task composition, explicit working
 memory, critic-agent feedback, reflection-agent self-correction, and
 search-based reasoning over multiple candidate solution paths.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    UserTask["User Task"] --> Composer["Task Composer"]
+    Composer --> Memory["Working Memory"]
+    Composer --> Search["Plan Search"]
+    Memory --> Search
+    Search --> Evaluator["Path Evaluator"]
+    Evaluator --> PlannerChoice["Selected Reasoning Path"]
+    PlannerChoice --> Executor["Executor"]
+    Executor --> Critic["Critic Agent"]
+    Critic --> Reflector["Reflection Agent"]
+    Reflector --> Memory
+    Critic --> Control["Continue / Retry / Replan"]
+    Control --> Executor
+    Control --> Search
+    Executor --> Synthesizer["Final Synthesizer"]
+    Memory --> Synthesizer
+```
+
+## Demo Output
+
+The CLI demo prints:
+
+- The composed task type and goal.
+- Candidate reasoning paths with scores.
+- The selected path.
+- Step-level execution quality.
+- Working-memory counts.
+- The final answer.
+
+Use `--trace-out` to save the full `AgentState` as JSON for inspection.
+
+## Project Positioning
+
+Reflective Plan-and-Execute Agent is an LLM agent prototype for complex task
+solving. It combines task composition, explicit working memory, multi-path plan
+search, critic-agent evaluation, reflection-agent self-correction, and traceable
+execution state.
