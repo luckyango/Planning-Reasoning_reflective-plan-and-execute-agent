@@ -42,20 +42,37 @@ and inspectable.
 ```mermaid
 flowchart TD
     UserTask["User Task"] --> Composer["Task Composer"]
+    Composer --> State["AgentState"]
     Composer --> Memory["Working Memory"]
-    Composer --> Search["Plan Search"]
+    State --> Search["Plan Search"]
     Memory --> Search
-    Search --> Evaluator["Path Evaluator"]
+    Search --> PathGen["Candidate Path Generator"]
+    PathGen --> Evaluator["Path Evaluator"]
     Evaluator --> PlannerChoice["Selected Reasoning Path"]
-    PlannerChoice --> Executor["Executor"]
-    Executor --> Critic["Critic Agent"]
+    PlannerChoice --> StepRunner["Execute Current Step"]
+    State --> StepRunner
+    Memory --> StepRunner
+
+    StepRunner --> Result["Execution Result"]
+    Result --> Critic["Critic Agent"]
     Critic --> Reflector["Reflection Agent"]
     Reflector --> Memory
-    Critic --> Control["Continue / Retry / Replan"]
-    Control --> Executor
-    Control --> Search
-    Executor --> Synthesizer["Final Synthesizer"]
+
+    Critic --> Control{"Control Decision"}
+    Control -->|"continue"| Done{"Plan Complete?"}
+    Done -->|"no"| NextStep["Advance To Next Step"]
+    NextStep --> StepRunner
+    Done -->|"yes"| Synthesizer["Final Synthesizer"]
+    Control -->|"retry current step"| StepRunner
+    Control -->|"replan remaining steps"| Replanner["Replanner"]
+    Replanner --> State
+    Replanner --> StepRunner
     Memory --> Synthesizer
+    State --> Synthesizer
+    Synthesizer --> FinalAnswer["Final Answer"]
+    State --> Trace["Trace JSON"]
+    Trace --> Analyzer["Trace Analyzer"]
+    Trace --> EvalDemo["Evaluation Demo"]
 ```
 
 ## Project Structure
