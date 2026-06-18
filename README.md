@@ -1,12 +1,14 @@
 # Reflective Plan-and-Execute Agent
 
-A Python prototype for a plan-and-execute agent architecture. The current baseline
-focuses on clear task planning, step execution, lightweight replanning, and final
-answer synthesis.
+A Python prototype for a reflective plan-and-execute agent architecture. The
+current version focuses on clear task planning, structured run state, traceable
+step execution, lightweight replanning, and final answer synthesis.
 
 ## Current Features
 
 - Generates a structured execution plan for a user task.
+- Stores each run in an explicit `AgentState`.
+- Tracks the task, plan, execution results, replan count, and trace events.
 - Executes each plan step with access to prior step history.
 - Uses a lightweight critic check to decide whether replanning is needed.
 - Replans only the remaining work when execution diverges from expectations.
@@ -14,8 +16,8 @@ answer synthesis.
 
 ## Roadmap
 
-1. Clean baseline implementation.
-2. Structured agent state and execution trace.
+1. Clean baseline implementation. Done.
+2. Structured agent state and execution trace. Done.
 3. Task composition with goals, constraints, and success criteria.
 4. Critic and reflexion loop for self-correction.
 5. Working memory for multi-step reasoning.

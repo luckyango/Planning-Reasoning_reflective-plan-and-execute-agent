@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from openai import OpenAI
@@ -9,6 +10,19 @@ from openai import OpenAI
 
 DEFAULT_MODEL = "gpt-4.1"
 CRITIC_MODEL = "gpt-4.1-mini"
+
+
+def utc_now() -> str:
+    """Return the current UTC timestamp in ISO 8601 format."""
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class Task:
+    """The user task that anchors an agent run."""
+
+    goal: str
 
 
 @dataclass
@@ -37,11 +51,65 @@ class PlanStep:
 
 
 @dataclass
-class ExecutionRecord:
+class ExecutionResult:
     """The result of executing one plan step."""
 
     step: PlanStep
     result: str
+    status: str = "completed"
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class TraceEvent:
+    """A structured event emitted during an agent run."""
+
+    event_type: str
+    message: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class AgentState:
+    """Mutable state for one plan-and-execute run."""
+
+    task: Task
+    plan: list[PlanStep] = field(default_factory=list)
+    executed_steps: list[ExecutionResult] = field(default_factory=list)
+    trace: list[TraceEvent] = field(default_factory=list)
+    replan_count: int = 0
+    final_answer: str | None = None
+
+    def add_trace(
+        self,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.trace.append(
+            TraceEvent(
+                event_type=event_type,
+                message=message,
+                payload=payload or {},
+            )
+        )
+
+    def remaining_steps_after(self, step_index: int) -> list[PlanStep]:
+        return self.plan[step_index + 1 :]
+
+    def trace_summary(self) -> list[dict[str, Any]]:
+        """Return a serializable summary of the execution trace."""
+
+        return [
+            {
+                "event_type": event.event_type,
+                "message": event.message,
+                "payload": event.payload,
+                "created_at": event.created_at,
+            }
+            for event in self.trace
+        ]
 
 
 class PlanAndExecuteAgent:
@@ -58,42 +126,88 @@ class PlanAndExecuteAgent:
         self.critic_model = critic_model
         self.max_replans = max_replans
         self.client = client or OpenAI()
+        self.last_state: AgentState | None = None
 
     def run(self, task: str) -> str:
         """Run the plan-execute-replan loop for a task."""
 
-        plan = self._plan(task)
-        self._print_plan("Initial plan", plan)
+        state = AgentState(task=Task(goal=task))
+        self.last_state = state
+        state.add_trace("run_started", "Agent run started.", {"task": task})
 
-        executed_steps: list[ExecutionRecord] = []
-        replan_count = 0
+        state.plan = self._plan(state.task)
+        state.add_trace(
+            "plan_created",
+            "Initial plan created.",
+            {"step_count": len(state.plan)},
+        )
+        self._print_plan("Initial plan", state.plan)
+
         step_index = 0
 
-        while step_index < len(plan):
-            step = plan[step_index]
-            print(f"\nExecuting step {step_index + 1}/{len(plan)}: {step.description}")
+        while step_index < len(state.plan):
+            step = state.plan[step_index]
+            print(f"\nExecuting step {step_index + 1}/{len(state.plan)}: {step.description}")
+            state.add_trace(
+                "step_started",
+                "Plan step execution started.",
+                {"step_id": step.id, "description": step.description},
+            )
 
-            result = self._execute_step(step, executed_steps)
-            executed_steps.append(ExecutionRecord(step=step, result=result))
+            result = self._execute_step(step, state)
+            execution_result = ExecutionResult(step=step, result=result)
+            state.executed_steps.append(execution_result)
+            state.add_trace(
+                "step_completed",
+                "Plan step execution completed.",
+                {
+                    "step_id": step.id,
+                    "description": step.description,
+                    "result_preview": result[:240],
+                },
+            )
 
             preview = result[:120].replace("\n", " ")
             print(f"Result preview: {preview}...")
 
-            remaining_steps = plan[step_index + 1 :]
-            should_replan = self._should_replan(task, executed_steps, remaining_steps)
+            remaining_steps = state.remaining_steps_after(step_index)
+            should_replan = self._should_replan(state, remaining_steps)
+            state.add_trace(
+                "replan_check_completed",
+                "Replan check completed.",
+                {
+                    "step_id": step.id,
+                    "should_replan": should_replan,
+                    "remaining_step_count": len(remaining_steps),
+                },
+            )
 
-            if should_replan and replan_count < self.max_replans:
-                replan_count += 1
-                print(f"\nReplanning remaining work ({replan_count}/{self.max_replans})")
-                new_remaining_plan = self._replan(task, executed_steps, remaining_steps)
-                plan = plan[: step_index + 1] + new_remaining_plan
-                self._print_plan("Updated plan", plan[step_index + 1 :], start=step_index + 2)
+            if should_replan and state.replan_count < self.max_replans:
+                state.replan_count += 1
+                print(f"\nReplanning remaining work ({state.replan_count}/{self.max_replans})")
+                new_remaining_plan = self._replan(state, remaining_steps)
+                state.plan = state.plan[: step_index + 1] + new_remaining_plan
+                state.add_trace(
+                    "plan_revised",
+                    "Remaining plan revised.",
+                    {
+                        "replan_count": state.replan_count,
+                        "new_remaining_step_count": len(new_remaining_plan),
+                    },
+                )
+                self._print_plan("Updated plan", state.plan[step_index + 1 :], start=step_index + 2)
 
             step_index += 1
 
-        return self._synthesize(task, executed_steps)
+        state.final_answer = self._synthesize(state)
+        state.add_trace(
+            "run_completed",
+            "Agent run completed.",
+            {"executed_step_count": len(state.executed_steps)},
+        )
+        return state.final_answer
 
-    def _plan(self, task: str) -> list[PlanStep]:
+    def _plan(self, task: Task) -> list[PlanStep]:
         """Generate an executable plan for the task."""
 
         response = self.client.chat.completions.create(
@@ -106,7 +220,7 @@ class PlanAndExecuteAgent:
 Create a detailed execution plan for the task below.
 
 Task:
-{task}
+{task.goal}
 
 Requirements:
 1. Break the task into 3 to 8 executable steps.
@@ -134,10 +248,10 @@ Return only a JSON object with this shape:
         raw_json = self._parse_json_response(response.choices[0].message.content)
         return self._parse_plan(raw_json)
 
-    def _execute_step(self, step: PlanStep, history: list[ExecutionRecord]) -> str:
+    def _execute_step(self, step: PlanStep, state: AgentState) -> str:
         """Execute one plan step using the current execution history."""
 
-        history_text = self._format_execution_history(history, max_chars=250)
+        history_text = self._format_execution_history(state.executed_steps, max_chars=250)
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -167,8 +281,7 @@ Return the execution result directly.""",
 
     def _should_replan(
         self,
-        task: str,
-        executed: list[ExecutionRecord],
+        state: AgentState,
         remaining: list[PlanStep],
     ) -> bool:
         """Decide whether the agent should replan the remaining steps."""
@@ -176,7 +289,7 @@ Return the execution result directly.""",
         if not remaining:
             return False
 
-        last_record = executed[-1]
+        last_record = state.executed_steps[-1]
 
         response = self.client.chat.completions.create(
             model=self.critic_model,
@@ -186,7 +299,7 @@ Return the execution result directly.""",
                     "content": f"""Decide whether the latest execution result seriously diverges from the expected output.
 
 Original task:
-{task}
+{state.task.goal}
 
 Step objective:
 {last_record.step.description}
@@ -211,13 +324,12 @@ Return only YES or NO.""",
 
     def _replan(
         self,
-        task: str,
-        executed: list[ExecutionRecord],
+        state: AgentState,
         old_remaining: list[PlanStep],
     ) -> list[PlanStep]:
         """Generate a new plan for the remaining work."""
 
-        history_text = self._format_execution_history(executed, max_chars=300)
+        history_text = self._format_execution_history(state.executed_steps, max_chars=300)
         remaining_text = json.dumps(
             [step.description for step in old_remaining],
             ensure_ascii=False,
@@ -232,7 +344,7 @@ Return only YES or NO.""",
                     "content": f"""Replan the remaining work based on the execution history.
 
 Original task:
-{task}
+{state.task.goal}
 
 Completed steps:
 {history_text}
@@ -262,10 +374,10 @@ Return only a JSON object with this shape:
         raw_json = self._parse_json_response(response.choices[0].message.content)
         return self._parse_plan(raw_json)
 
-    def _synthesize(self, task: str, executed: list[ExecutionRecord]) -> str:
+    def _synthesize(self, state: AgentState) -> str:
         """Synthesize all execution results into the final answer."""
 
-        history_text = self._format_execution_history(executed, max_chars=700)
+        history_text = self._format_execution_history(state.executed_steps, max_chars=700)
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -275,7 +387,7 @@ Return only a JSON object with this shape:
                     "content": f"""Answer the original task based on the execution results.
 
 Original task:
-{task}
+{state.task.goal}
 
 Execution results:
 {history_text}
@@ -323,7 +435,7 @@ Provide a complete, structured final answer.""",
 
     def _format_execution_history(
         self,
-        history: list[ExecutionRecord],
+        history: list[ExecutionResult],
         max_chars: int,
     ) -> str:
         """Format execution history for model context."""
