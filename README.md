@@ -12,7 +12,9 @@ step execution, lightweight replanning, and final answer synthesis.
 - Stores each run in an explicit `AgentState`.
 - Tracks the task, plan, execution results, replan count, and trace events.
 - Executes each plan step with access to prior step history.
-- Uses a lightweight critic check to decide whether replanning is needed.
+- Uses a critic agent to score execution quality, goal alignment, and evidence strength.
+- Uses a reflection agent to turn critiques into lessons, failure modes, and correction strategies.
+- Supports retrying a weak step or replanning remaining work based on critic feedback.
 - Replans only the remaining work when execution diverges from expectations.
 - Synthesizes all step results into a final structured answer.
 
@@ -21,7 +23,7 @@ step execution, lightweight replanning, and final answer synthesis.
 1. Clean baseline implementation. Done.
 2. Structured agent state and execution trace. Done.
 3. Task composition with goals, constraints, and success criteria. Done.
-4. Critic and reflexion loop for self-correction.
+4. Critic and reflexion loop for self-correction. Done.
 5. Working memory for multi-step reasoning.
 6. Search-based reasoning over multiple candidate plans.
 7. Product demo with traceable reasoning output.
@@ -50,5 +52,5 @@ python plan_and_execute_agent.py
 
 This project is intended to evolve into a reflective planning and reasoning
 agent. The target architecture includes task composition, explicit working
-memory, critic-based self-correction, reflexion records, and search-based
-reasoning over multiple candidate solution paths.
+memory, critic-agent feedback, reflection-agent self-correction, and
+search-based reasoning over multiple candidate solution paths.
