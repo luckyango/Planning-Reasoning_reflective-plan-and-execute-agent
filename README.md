@@ -59,6 +59,24 @@ Run with a custom task and save the full trace:
 python demo.py --task "Compare LangGraph, CrewAI, and AutoGen for an internal knowledge-base agent." --trace-out runs/trace.json
 ```
 
+Run tests:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+Analyze a saved trace:
+
+```powershell
+python analyze_trace.py runs/trace.json
+```
+
+Print the trace analysis as JSON:
+
+```powershell
+python analyze_trace.py runs/trace.json --json
+```
+
 ## Architecture Direction
 
 This project is intended to evolve into a reflective planning and reasoning
@@ -99,6 +117,16 @@ The CLI demo prints:
 - The final answer.
 
 Use `--trace-out` to save the full `AgentState` as JSON for inspection.
+
+## Trace Analyzer
+
+`analyze_trace.py` converts a saved run trace into a compact reasoning report:
+
+- Selected reasoning path and candidate path scores.
+- Executed step count, retry count, and replan count.
+- Average critic scores for quality, goal alignment, and evidence strength.
+- Critic issues, reflection lessons, and working-memory counts.
+- Whether a final answer was produced.
 
 ## Project Positioning
 

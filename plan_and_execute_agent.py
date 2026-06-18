@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 
 DEFAULT_MODEL = "gpt-4.1"
@@ -819,6 +822,11 @@ class PlanAndExecuteAgent:
         self.critic_model = critic_model
         self.max_replans = max_replans
         self.candidate_plan_count = candidate_plan_count
+        if client is None and OpenAI is None:
+            raise RuntimeError(
+                "The openai package is required when no custom client is provided. "
+                "Install dependencies with 'pip install -r requirements.txt'."
+            )
         self.client = client or OpenAI()
         self.task_composer = TaskComposer(client=self.client, model=self.model)
         self.critic = Critic(client=self.client, model=self.critic_model)
